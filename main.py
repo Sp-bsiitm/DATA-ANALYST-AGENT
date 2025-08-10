@@ -21,6 +21,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/healthz")
+def health():
+    return {"status": "ok"}
+    
 def read_uploaded_file(upload: UploadFile) -> bytes:
     return upload.file.read()
 
