@@ -1,9 +1,11 @@
 fastapi
-uvicorn[standard]
-python-multipart
-pydantic
+uvicorn
+pandas
+requests
+beautifulsoup4
+duckdb
 matplotlib
-numpy
+
 # Optional (install when needed)
 # requests
 # beautifulsoup4
