@@ -3,6 +3,13 @@ import io
 import time
 import base64
 import asyncio
+import requests
+from bs4 import BeautifulSoup
+import pandas as pd
+import duckdb
+import matplotlib.pyplot as plt
+import numpy as np
+import io, base64
 from typing import List
 from fastapi import FastAPI, File, UploadFile, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -33,35 +40,45 @@ async def run_with_timeout(coro, timeout=MAX_PROCESS_SECONDS):
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail=f"Processing exceeded {timeout} seconds")
 
+
+
 async def process_request_logic(files: dict, questions_txt: str) -> dict:
-    out = {
-        "received_files": list(files.keys()),
-        "questions_preview": questions_txt[:100],
-        "timestamp": time.time(),
-        "note": "This is a stub response. Replace process_request_logic with your real analysis."
-    }
+    question = questions_txt.strip()
+    output = {"question": question}
 
-    try:
-        import matplotlib.pyplot as plt
-        import numpy as np
-        fig, ax = plt.subplots()
-        x = np.linspace(0, 2 * np.pi, 30)
-        y = np.sin(x)
-        ax.plot(x, y, marker='o')
-        ax.set_title("Demo plot")
-        ax.set_xlabel("x")
-        ax.set_ylabel("sin(x)")
-        buf = io.BytesIO()
-        fig.tight_layout()
-        fig.savefig(buf, format="png", dpi=100)
-        plt.close(fig)
-        buf.seek(0)
-        img_b64 = base64.b64encode(buf.read()).decode('ascii')
-        out["demo_plot"] = f"data:image/png;base64,{img_b64}"
-    except Exception as e:
-        out["demo_plot_error"] = str(e)
+    # 1. Wikipedia scraping example
+    if question.lower().startswith("scrape wikipedia"):
+        topic = question.split(" ", 2)[-1]
+        url = f"https://en.wikipedia.org/wiki/{topic.replace(' ', '_')}"
+        r = requests.get(url)
+        soup = BeautifulSoup(r.text, "html.parser")
+        first_p = soup.find("p").get_text(strip=True)
+        output["answer"] = first_p[:500]  # first paragraph
+        return output
 
-    return out
+    # 2. DuckDB + CSV analysis
+    for fname, content in files.items():
+        if fname.lower().endswith(".csv"):
+            df = pd.read_csv(io.BytesIO(content))
+            # Example: count rows
+            row_count = len(df)
+            output["dataset_rows"] = row_count
+
+            # Example: basic plot
+            fig, ax = plt.subplots()
+            ax.plot(np.arange(row_count), np.random.rand(row_count))
+            buf = io.BytesIO()
+            fig.savefig(buf, format="png", dpi=100)
+            buf.seek(0)
+            img_b64 = base64.b64encode(buf.read()).decode('ascii')
+            output["plot"] = f"data:image/png;base64,{img_b64}"
+            plt.close(fig)
+            return output
+
+    # 3. Default fallback
+    output["answer"] = "I don't have logic for that type of question yet."
+    return output
+
 
 @app.post("/", response_class=JSONResponse)
 async def handle_post(
