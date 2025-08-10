@@ -1,0 +1,12 @@
+fastapi
+uvicorn[standard]
+python-multipart
+pydantic
+matplotlib
+numpy
+# Optional (install when needed)
+# requests
+# beautifulsoup4
+# duckdb
+# pandas
+# pyarrow
