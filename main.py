@@ -46,38 +46,52 @@ async def process_request_logic(files: dict, questions_txt: str) -> dict:
     question = questions_txt.strip()
     output = {"question": question}
 
-    # 1. Wikipedia scraping example
+    # Wikipedia scraping
     if question.lower().startswith("scrape wikipedia"):
-        topic = question.split(" ", 2)[-1]
-        url = f"https://en.wikipedia.org/wiki/{topic.replace(' ', '_')}"
-        r = requests.get(url)
-        soup = BeautifulSoup(r.text, "html.parser")
-        first_p = soup.find("p").get_text(strip=True)
-        output["answer"] = first_p[:500]  # first paragraph
-        return output
+        try:
+            topic = question.split(" ", 2)[-1]
+            url = f"https://en.wikipedia.org/wiki/{topic.replace(' ', '_')}"
+            r = requests.get(url, timeout=10)
+            if r.status_code != 200:
+                output["answer"] = f"Failed to fetch Wikipedia page. Status: {r.status_code}"
+                return output
 
-    # 2. DuckDB + CSV analysis
-    for fname, content in files.items():
-        if fname.lower().endswith(".csv"):
-            df = pd.read_csv(io.BytesIO(content))
-            # Example: count rows
-            row_count = len(df)
-            output["dataset_rows"] = row_count
-
-            # Example: basic plot
-            fig, ax = plt.subplots()
-            ax.plot(np.arange(row_count), np.random.rand(row_count))
-            buf = io.BytesIO()
-            fig.savefig(buf, format="png", dpi=100)
-            buf.seek(0)
-            img_b64 = base64.b64encode(buf.read()).decode('ascii')
-            output["plot"] = f"data:image/png;base64,{img_b64}"
-            plt.close(fig)
+            soup = BeautifulSoup(r.text, "html.parser")
+            paragraphs = [p.get_text(strip=True) for p in soup.find_all("p") if p.get_text(strip=True)]
+            if paragraphs:
+                output["answer"] = paragraphs[0][:1000]  # first paragraph, limit length
+            else:
+                output["answer"] = "No content found on the Wikipedia page."
+            return output
+        except Exception as e:
+            output["answer"] = f"Error scraping Wikipedia: {str(e)}"
             return output
 
-    # 3. Default fallback
+    # CSV analysis
+    for fname, content in files.items():
+        if fname.lower().endswith(".csv"):
+            try:
+                df = pd.read_csv(io.BytesIO(content))
+                row_count = len(df)
+                output["dataset_rows"] = row_count
+
+                fig, ax = plt.subplots()
+                ax.plot(np.arange(row_count), np.random.rand(row_count))
+                buf = io.BytesIO()
+                fig.savefig(buf, format="png", dpi=100)
+                buf.seek(0)
+                img_b64 = base64.b64encode(buf.read()).decode('ascii')
+                output["plot"] = f"data:image/png;base64,{img_b64}"
+                plt.close(fig)
+                return output
+            except Exception as e:
+                output["error"] = f"Error processing CSV: {str(e)}"
+                return output
+
+    # Fallback
     output["answer"] = "I don't have logic for that type of question yet."
     return output
+
 
 
 @app.post("/", response_class=JSONResponse)
