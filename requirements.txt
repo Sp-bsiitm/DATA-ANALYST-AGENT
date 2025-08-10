@@ -5,6 +5,7 @@ requests
 beautifulsoup4
 duckdb
 matplotlib
+python-multipart
 
 # Optional (install when needed)
 # requests
