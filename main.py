@@ -77,6 +77,14 @@ def analyze_csv(file_bytes):
 def handle_highest_grossing_films(url_text: str):
     """Scrape Wikipedia table of highest-grossing films and return: [# of $2bn movies before 2000, earliest > $1.5bn film, correlation Rank vs Peak, scatterplot URI]"""
     import re
+
+    normalized_question = re.sub(r"[-]", " ", question_lower)
+    if "highest grossing films" in normalized_question:
+        return {
+            "question": question_text,
+            "answer": handle_highest_grossing_films(question_text)
+        }
+
     m = re.search(r"https?://\S+", url_text)
     if not m:
         raise ValueError("No URL found in question text.")
@@ -191,10 +199,17 @@ async def process_request(
 
         elif "indian high court" in question_lower:
             return {"question": question_text, "records_sample": indian_high_court_query()}
-
-        elif "highest-grossing films" in question_lower:
-            # Return the array directly instead of wrapping in a dict
-            return handle_highest_grossing_films(question_text)
+        
+        # Highest-grossing films handler
+        elif any(kw in question_lower for kw in [
+            "highest grossing films",
+            "highest-grossing films",
+            "list of highest grossing films"
+        ]):
+            return {
+                "question": question_text,
+                "answer": handle_highest_grossing_films(question_text)
+            }
 
 
         else:
