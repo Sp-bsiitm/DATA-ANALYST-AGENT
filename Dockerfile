@@ -1,12 +1,14 @@
-# Dockerfile
+# Use slim Python image
 FROM python:3.11-slim
 
+# Prevent Python from writing pyc files & ensure logs are flushed
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
+# Set working directory
 WORKDIR /app
 
-# system dependencies for matplotlib
+# Install system packages needed for matplotlib and pandas
 RUN apt-get update && apt-get install -y \
     build-essential \
     libfreetype6-dev \
@@ -15,11 +17,16 @@ RUN apt-get update && apt-get install -y \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt /app/
-RUN pip install --upgrade pip
-RUN pip install -r requirements.txt
+# Install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt
 
-COPY . /app
+# Copy project files
+COPY . .
 
-# uvicorn
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1"]
+# Expose port (Render expects this to match in your service settings)
+EXPOSE 8000
+
+# Start the app with uvicorn (1 worker is fine for CPU-bound tasks)
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
