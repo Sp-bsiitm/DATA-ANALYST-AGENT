@@ -72,22 +72,20 @@ def scrape_wikipedia(topic):
     if r.status_code == 200:
         return r.json().get("extract", "")
     return ""
-
+    
 def indian_high_court_query():
     """
     Example Indian High Court branch using DuckDB and a public CSV dataset.
     Returns a small sample (max 5 rows) from a stable CSV URL.
     """
-    # Stable public CSV (addresses dataset from Florida State University)
     url = "https://people.sc.fsu.edu/~jburkardt/data/csv/addresses.csv"
     try:
         con = duckdb.connect()
         con.execute("INSTALL httpfs; LOAD httpfs;")
-        # Read first few rows to avoid timeouts
         df = con.execute(f"""
             SELECT * FROM read_csv_auto('{url}') LIMIT 5
         """).fetchdf()
-        return {"records_sample": df.to_dict(orient="records")}
+        return df.to_dict(orient="records")  # ✅ Return list directly
     except Exception as e:
         return {"error": f"Error loading public CSV: {e}"}
 
