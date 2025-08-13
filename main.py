@@ -80,12 +80,15 @@ def indian_high_court_query():
     con.execute("INSTALL httpfs; LOAD httpfs;")
     df = con.execute(f"SELECT * FROM read_csv_auto('{url}') LIMIT 5").fetchdf()
     return df.to_dict(orient="records")
+
 # ---- Main endpoint ----
+from fastapi import HTTPException
+
 @app.post("/")
 async def process_request(
-    questions: UploadFile = File(None),
-    questions_txt: UploadFile = File(None),
-    data: UploadFile = File(None)
+    questions: UploadFile = File(None, alias="questions"),
+    questions_txt: UploadFile = File(None, alias="questions.txt"),
+    data: UploadFile = File(None, alias="data")
 ):
     start_time = time.time()
     try:
@@ -120,6 +123,7 @@ async def process_request(
             status_code=500,
             content={"error": str(e), "traceback": traceback_str}
         )
+
 
 @app.get("/healthz")
 def health_check():
