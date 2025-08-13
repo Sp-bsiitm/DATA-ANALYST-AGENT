@@ -157,7 +157,13 @@ def handle_highest_grossing_films(question_text: str):
     plt.close(fig)
 
     # Return as array of strings
-    return [str(two_bn_pre2000), earliest_title, corr_str, img_uri]
+    return [
+        str(two_bn_pre2000),
+        str(earliest_title),
+        f"{corr:.8f}",  # exactly 8 decimal places
+        img_uri         # already a string
+    ]
+
 
 
 def scrape_wikipedia(topic):
