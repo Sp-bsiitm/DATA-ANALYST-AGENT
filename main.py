@@ -1,118 +1,121 @@
 import os
-import io
+import json
 import time
+import traceback
 import base64
-import asyncio
-import requests
-from bs4 import BeautifulSoup
-import pandas as pd
+import io
 import duckdb
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
-import io, base64
-from typing import List
-from fastapi import FastAPI, File, UploadFile, HTTPException, Request
+import requests
+import pandas as pd
+from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.concurrency import run_in_threadpool
 
-MAX_PROCESS_SECONDS = 180  # 3 minutes
-
-app = FastAPI(title="Data Analyst Agent API")
-
+# ---- FastAPI setup ----
+app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-@app.get("/healthz")
-def health():
-    return {"status": "ok"}
+MAX_EXECUTION_TIME = 180  # seconds
+PLOT_MAX_BYTES = 100_000  # <100 KB
 
-def read_uploaded_file(upload: UploadFile) -> bytes:
-    return upload.file.read()
+# ---- Utility Functions ----
+def within_time(start_time):
+    return (time.time() - start_time) < MAX_EXECUTION_TIME
 
-async def run_with_timeout(coro, timeout=MAX_PROCESS_SECONDS):
-    try:
-        return await asyncio.wait_for(coro, timeout=timeout)
-    except asyncio.TimeoutError:
-        raise HTTPException(status_code=504, detail=f"Processing exceeded {timeout} seconds")
+def compress_plot_to_base64():
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', bbox_inches='tight')
+    plt.close()
+    img_bytes = buf.getvalue()
+    buf.close()
 
+    # compress until under size limit
+    quality = 90
+    while len(img_bytes) > PLOT_MAX_BYTES and quality > 10:
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png', bbox_inches='tight', dpi=100)
+        buf.seek(0)
+        img_bytes = buf.getvalue()
+        quality -= 10
+    return "data:image/png;base64," + base64.b64encode(img_bytes).decode()
 
+def analyze_csv(file_bytes):
+    df = pd.read_csv(io.BytesIO(file_bytes))
+    plot_uri = None
+    if df.shape[1] >= 2:
+        x = df.iloc[:, 0]
+        y = df.iloc[:, 1]
+        plt.scatter(x, y, label="Data")
+        coeffs = np.polyfit(x, y, 1)
+        trend = np.poly1d(coeffs)
+        plt.plot(x, trend(x), "r--", label="Trend line")
+        plt.legend()
+        plot_uri = compress_plot_to_base64()
+    return {
+        "dataset_rows": len(df),
+        "plot": plot_uri
+    }
 
-async def process_request_logic(files: dict, questions_txt: str) -> dict:
-    question = questions_txt.strip()
-    output = {"question": question}
+def scrape_wikipedia(topic):
+    url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{topic.replace(' ', '_')}"
+    r = requests.get(url, timeout=10)
+    if r.status_code == 200:
+        return r.json().get("extract", "")
+    return ""
 
-    # Wikipedia scraping
-    if question.lower().startswith("scrape wikipedia"):
-        try:
-            topic = question.split(" ", 2)[-1]
-            url = f"https://en.wikipedia.org/wiki/{topic.replace(' ', '_')}"
-            r = requests.get(url, timeout=10)
-            if r.status_code != 200:
-                output["answer"] = f"Failed to fetch Wikipedia page. Status: {r.status_code}"
-                return output
+def indian_high_court_query():
+    # Example using DuckDB with HTTPFS parquet
+    url = "https://github.com/datablist/sample-csv-files/raw/main/files/people/people-100.csv"
+    con = duckdb.connect()
+    con.execute("INSTALL httpfs; LOAD httpfs;")
+    df = con.execute(f"SELECT * FROM read_csv_auto('{url}') LIMIT 5").fetchdf()
+    return df.to_dict(orient="records")
 
-            soup = BeautifulSoup(r.text, "html.parser")
-            paragraphs = [p.get_text(strip=True) for p in soup.find_all("p") if p.get_text(strip=True)]
-            if paragraphs:
-                output["answer"] = paragraphs[0][:1000]  # first paragraph, limit length
-            else:
-                output["answer"] = "No content found on the Wikipedia page."
-            return output
-        except Exception as e:
-            output["answer"] = f"Error scraping Wikipedia: {str(e)}"
-            return output
-
-    # CSV analysis
-    for fname, content in files.items():
-        if fname.lower().endswith(".csv"):
-            try:
-                df = pd.read_csv(io.BytesIO(content))
-                row_count = len(df)
-                output["dataset_rows"] = row_count
-
-                fig, ax = plt.subplots()
-                ax.plot(np.arange(row_count), np.random.rand(row_count))
-                buf = io.BytesIO()
-                fig.savefig(buf, format="png", dpi=100)
-                buf.seek(0)
-                img_b64 = base64.b64encode(buf.read()).decode('ascii')
-                output["plot"] = f"data:image/png;base64,{img_b64}"
-                plt.close(fig)
-                return output
-            except Exception as e:
-                output["error"] = f"Error processing CSV: {str(e)}"
-                return output
-
-    # Fallback
-    output["answer"] = "I don't have logic for that type of question yet."
-    return output
-
-@app.post("/", response_class=JSONResponse)
-async def handle_post(
-    request: Request,
-    questions_file: UploadFile = File(..., alias="questions.txt"),
-    other_files: List[UploadFile] = File(None)
+# ---- Main endpoint ----
+@app.post("/")
+async def process_request(
+    questions: UploadFile = File(...),
+    data: UploadFile = File(None)
 ):
-    files_map = {}
+    start_time = time.time()
+    try:
+        question_text = (await questions.read()).decode("utf-8").strip()
 
-    # Read main questions.txt
-    questions_content_bytes = await run_in_threadpool(read_uploaded_file, questions_file)
-    questions_txt_content = questions_content_bytes.decode("utf-8", errors="ignore")
-    files_map[questions_file.filename] = questions_content_bytes
+        # Decide task type
+        if "scrape wikipedia" in question_text.lower():
+            topic = question_text.split("scrape wikipedia", 1)[1].strip()
+            answer = scrape_wikipedia(topic)
+            return {"question": question_text, "answer": answer}
 
-    # Grab all other uploaded files, regardless of their field names
-    form = await request.form()
-    for field_name, file_obj in form.items():
-        if field_name != "questions.txt" and hasattr(file_obj, "filename"):
-            content = await run_in_threadpool(read_uploaded_file, file_obj)
-            files_map[file_obj.filename] = content
+        elif "analyze csv" in question_text.lower() and data:
+            csv_bytes = await data.read()
+            result = analyze_csv(csv_bytes)
+            return {"question": question_text, **result}
 
-    # Process and return
-    result_obj = await run_with_timeout(process_request_logic(files_map, questions_txt_content))
-    return JSONResponse(content=result_obj)
+        elif "indian high court" in question_text.lower():
+            records = indian_high_court_query()
+            return {"question": question_text, "records_sample": records}
 
+        else:
+            return {"question": question_text, "answer": "I don't have logic for that type of question yet."}
+
+    except Exception as e:
+        traceback_str = traceback.format_exc()
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e), "traceback": traceback_str}
+        )
+
+@app.get("/healthz")
+def health_check():
+    return {"status": "ok"}
