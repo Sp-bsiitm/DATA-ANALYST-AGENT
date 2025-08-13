@@ -92,8 +92,6 @@ async def process_request_logic(files: dict, questions_txt: str) -> dict:
     output["answer"] = "I don't have logic for that type of question yet."
     return output
 
-
-
 @app.post("/", response_class=JSONResponse)
 async def handle_post(
     request: Request,
@@ -107,12 +105,14 @@ async def handle_post(
     questions_txt_content = questions_content_bytes.decode("utf-8", errors="ignore")
     files_map[questions_file.filename] = questions_content_bytes
 
-    # Add any other uploaded files
-    if other_files:
-        for upload in other_files:
-            content = await run_in_threadpool(read_uploaded_file, upload)
-            files_map[upload.filename] = content
+    # Grab all other uploaded files, regardless of their field names
+    form = await request.form()
+    for field_name, file_obj in form.items():
+        if field_name != "questions.txt" and hasattr(file_obj, "filename"):
+            content = await run_in_threadpool(read_uploaded_file, file_obj)
+            files_map[file_obj.filename] = content
 
     # Process and return
     result_obj = await run_with_timeout(process_request_logic(files_map, questions_txt_content))
     return JSONResponse(content=result_obj)
+
