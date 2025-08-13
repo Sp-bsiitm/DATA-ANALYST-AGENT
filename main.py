@@ -248,6 +248,11 @@ async def process_request(
             records = indian_high_court_query()
             return {"question": question_text, "records_sample": records}
 
+        # Task: Highest-Grossing Films Wikipedia Table
+        elif "highest-grossing films" in question_lower:
+            answer_list = handle_highest_grossing_films(question_text)
+            return {"question": question_text, "answer": answer_list}
+
         # Unknown task
         else:
             return {"question": question_text, "answer": "I don't have logic for that type of question yet."}
