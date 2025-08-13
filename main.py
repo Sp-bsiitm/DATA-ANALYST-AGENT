@@ -80,16 +80,21 @@ def indian_high_court_query():
     con.execute("INSTALL httpfs; LOAD httpfs;")
     df = con.execute(f"SELECT * FROM read_csv_auto('{url}') LIMIT 5").fetchdf()
     return df.to_dict(orient="records")
-
 # ---- Main endpoint ----
 @app.post("/")
 async def process_request(
-    questions: UploadFile = File(...),
+    questions: UploadFile = File(None),
+    questions_txt: UploadFile = File(None),
     data: UploadFile = File(None)
 ):
     start_time = time.time()
     try:
-        question_text = (await questions.read()).decode("utf-8").strip()
+        # Pick whichever file field is provided
+        q_file = questions or questions_txt
+        if not q_file:
+            raise HTTPException(status_code=400, detail="Questions file is required")
+
+        question_text = (await q_file.read()).decode("utf-8").strip()
 
         # Decide task type
         if "scrape wikipedia" in question_text.lower():
