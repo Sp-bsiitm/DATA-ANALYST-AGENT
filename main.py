@@ -74,22 +74,22 @@ def analyze_csv(file_bytes):
         "plot": plot_uri
     }
 
-def handle_highest_grossing_films(url_text: str):
-    """Scrape Wikipedia table of highest-grossing films and return: [# of $2bn movies before 2000, earliest > $1.5bn film, correlation Rank vs Peak, scatterplot URI]"""
+def handle_highest_grossing_films(question_text: str):
+    """Scrape Wikipedia table of highest-grossing films and return:
+    [# of $2bn movies before 2000, earliest > $1.5bn film, correlation Rank vs Peak, scatterplot URI]
+    """
     import re
 
+    question_lower = question_text.lower()
     normalized_question = re.sub(r"[-]", " ", question_lower)
-    if "highest grossing films" in normalized_question:
-        return {
-            "question": question_text,
-            "answer": handle_highest_grossing_films(question_text)
-        }
 
-    m = re.search(r"https?://\S+", url_text)
+    # Extract the Wikipedia URL from the question text
+    m = re.search(r"https?://\S+", question_text)
     if not m:
         raise ValueError("No URL found in question text.")
     url = m.group(0)
 
+    # Download and parse the table
     resp = requests.get(url, timeout=20)
     resp.raise_for_status()
     tables = pd.read_html(resp.text)
