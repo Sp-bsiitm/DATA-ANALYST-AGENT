@@ -79,51 +79,81 @@ def handle_highest_grossing_films(question_text: str):
     [# of $2bn movies before 2000, earliest > $1.5bn film, correlation Rank vs Peak, scatterplot URI]
     """
     import re
-    question_lower = question_text.lower()
-    normalized_question = re.sub(r"[-]", " ", question_lower)
 
+    # Extract URL if provided
     m = re.search(r"https?://\S+", question_text)
-    if not m:
-        raise ValueError("No URL found in question text.")
-    url = m.group(0)
+    url = m.group(0) if m else None
 
-    resp = requests.get(url, timeout=20)
-    resp.raise_for_status()
-    tables = pd.read_html(resp.text)
+    # --- Fetch page with fallback ---
+    try:
+        resp = None
+        if url:
+            resp = requests.get(url, timeout=20, allow_redirects=True)
+        if not url or (resp and resp.status_code != 200):
+            # Fallback: search for correct page
+            search_url = "https://en.wikipedia.org/w/api.php"
+            params = {
+                "action": "query",
+                "list": "search",
+                "srsearch": "List of highest-grossing films",
+                "format": "json"
+            }
+            search_resp = requests.get(search_url, params=params, timeout=10)
+            search_resp.raise_for_status()
+            search_data = search_resp.json()
+            if search_data["query"]["search"]:
+                page_title = search_data["query"]["search"][0]["title"]
+                fallback_url = f"https://en.wikipedia.org/wiki/{page_title.replace(' ', '_')}"
+                resp = requests.get(fallback_url, timeout=20, allow_redirects=True)
+        if not resp or resp.status_code != 200:
+            raise ValueError(f"Failed to fetch Wikipedia page (status {resp.status_code if resp else 'N/A'})")
+    except Exception as e:
+        raise ValueError(f"Failed to fetch Wikipedia page: {e}")
 
-    cand = [t for t in tables if any(str(c).strip().lower() == "rank" for c in t.columns)]
+    # --- Parse tables ---
+    try:
+        tables = pd.read_html(resp.text)
+    except Exception as e:
+        raise ValueError(f"Failed to parse HTML tables: {e}")
+
+    # Find table with 'Rank' or similar
+    cand = [
+        t for t in tables
+        if any("rank" in str(c).strip().lower() for c in t.columns)
+    ]
     if not cand:
-        raise ValueError("No table with a 'Rank' column found.")
+        raise ValueError("No table with a 'Rank'-like column found.")
     df = cand[0].copy()
     df.columns = [(" ".join(col) if isinstance(col, tuple) else str(col)).strip() for col in df.columns]
 
+    # --- Map columns ---
+    def find_col(possible_names):
+        for col in df.columns:
+            if any(name in col.lower() for name in possible_names):
+                return col
+        return None
+
+    colmap = {
+        "Rank": find_col(["rank"]),
+        "Peak": find_col(["peak"]),
+        "Title": find_col(["title", "film"]),
+        "Gross": find_col(["worldwide", "gross"]),
+        "Year": find_col(["year", "release"])
+    }
+
+    if not all(colmap.values()):
+        raise ValueError(f"Could not map required columns. Found: {colmap}")
+
+    # --- Clean numeric data ---
     def to_num(s):
         if pd.isna(s):
             return np.nan
         return pd.to_numeric(str(s).replace("$", "").replace(",", "").strip(), errors="coerce")
 
-    colmap = {}
-    for c in df.columns:
-        cl = c.lower()
-        if cl == "rank" and "Rank" not in colmap:
-            colmap["Rank"] = c
-        if "peak" in cl and "Peak" not in colmap:
-            colmap["Peak"] = c
-        if "title" in cl and "Title" not in colmap:
-            colmap["Title"] = c
-        if ("worldwide" in cl or "gross" in cl) and "Gross" not in colmap:
-            colmap["Gross"] = c
-        if "year" in cl and "Year" not in colmap:
-            colmap["Year"] = c
-
-    need = ["Rank", "Peak", "Title", "Gross", "Year"]
-    if not all(k in colmap for k in need):
-        raise ValueError(f"Expected columns not found. Got mapping: {colmap}")
-
     df["Rank_num"] = pd.to_numeric(df[colmap["Rank"]], errors="coerce")
     df["Peak_num"] = pd.to_numeric(df[colmap["Peak"]], errors="coerce")
     df["Gross_num"] = df[colmap["Gross"]].apply(to_num)
-    df["Year_num"]  = pd.to_numeric(df[colmap["Year"]], errors="coerce")
+    df["Year_num"] = pd.to_numeric(df[colmap["Year"]], errors="coerce")
 
     # 1. Number of $2bn movies before 2000
     two_bn_pre2000 = ((df["Gross_num"] >= 2_000_000_000) & (df["Year_num"] < 2000)).sum()
@@ -137,7 +167,6 @@ def handle_highest_grossing_films(question_text: str):
 
     # 3. Correlation
     corr = pd.Series(df["Rank_num"]).corr(pd.Series(df["Peak_num"]))
-    corr_str = f"{corr:.8f}"  # fixed precision string
 
     # 4. Scatterplot
     mask = df["Rank_num"].notna() & df["Peak_num"].notna()
@@ -156,13 +185,13 @@ def handle_highest_grossing_films(question_text: str):
     img_uri = fig_to_base64_png_under_limit(fig, max_bytes=PLOT_MAX_BYTES)
     plt.close(fig)
 
-    # Return as array of strings
     return [
         str(two_bn_pre2000),
         str(earliest_title),
-        f"{corr:.8f}",  # exactly 8 decimal places
-        img_uri         # already a string
+        f"{corr:.8f}",
+        img_uri
     ]
+
 
 
 
