@@ -1,267 +1,167 @@
 import os
-import json
-import time
-import traceback
-import base64
 import io
-import duckdb
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-import numpy as np
+import json
+import base64
+import traceback
 import requests
 import pandas as pd
-from fastapi import FastAPI, File, UploadFile, HTTPException
+import matplotlib.pyplot as plt
+import numpy as np
+import networkx as nx
+from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.responses import JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.cors import CORSMiddleware
 
-# ---- FastAPI setup ----
 app = FastAPI()
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-MAX_EXECUTION_TIME = 180  # seconds
-PLOT_MAX_BYTES = 100_000  # <100 KB
+# -------- Helper functions --------
 
-# ---- Utility Functions ----
-def within_time(start_time):
-    return (time.time() - start_time) < MAX_EXECUTION_TIME
-
-def fig_to_base64_png_under_limit(fig, max_bytes=100_000):
-    """Serialize Matplotlib figure to PNG data URI under max_bytes by reducing DPI."""
-    for dpi in (200, 160, 140, 120, 100, 90, 80, 70, 60):
-        buf = io.BytesIO()
-        fig.savefig(buf, format="png", bbox_inches="tight", dpi=dpi)
-        data = buf.getvalue()
-        if len(data) <= max_bytes:
-            return "data:image/png;base64," + base64.b64encode(data).decode("ascii")
+def df_to_base64_plot(df, x_col, y_col, title=None):
+    """Return a scatterplot with dotted red regression line as base64 data URI."""
+    fig, ax = plt.subplots()
+    ax.scatter(df[x_col], df[y_col], label="Data")
+    m, b = np.polyfit(df[x_col], df[y_col], 1)
+    ax.plot(df[x_col], m * df[x_col] + b, 'r--', label="Regression")
+    ax.set_xlabel(x_col)
+    ax.set_ylabel(y_col)
+    if title:
+        ax.set_title(title)
+    ax.legend()
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", bbox_inches="tight", dpi=50)
-    data = buf.getvalue()
-    return "data:image/png;base64," + base64.b64encode(data).decode("ascii")
+    plt.savefig(buf, format="png", bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    encoded = base64.b64encode(buf.read()).decode("utf-8")
+    return f"data:image/png;base64,{encoded}"
 
-def analyze_csv(file_bytes):
-    df = pd.read_csv(io.BytesIO(file_bytes))
-    plot_uri = None
+def scrape_highest_grossing_films():
+    """Scrape Wikipedia table for highest-grossing films."""
+    url = "https://en.wikipedia.org/wiki/List_of_highest-grossing_films"
+    resp = requests.get(url, timeout=20)
+    resp.raise_for_status()
+    tables = pd.read_html(resp.text)
+    df = None
+    for t in tables:
+        if "Rank" in t.columns and "Title" in t.columns:
+            df = t
+            break
+    return df
 
-    if df.shape[1] >= 2:
-        x = pd.to_numeric(df.iloc[:, 0], errors="coerce")
-        y = pd.to_numeric(df.iloc[:, 1], errors="coerce")
-        mask = x.notna() & y.notna()
-        x, y = x[mask], y[mask]
+def shortest_path_network(file_path, source, target):
+    df = pd.read_csv(file_path)
+    G = nx.Graph()
+    for _, row in df.iterrows():
+        if "weight" in df.columns:
+            G.add_edge(row["source"], row["target"], weight=row["weight"])
+        else:
+            G.add_edge(row["source"], row["target"], weight=1)
+    return nx.shortest_path(G, source=source, target=target, weight="weight")
 
-        fig, ax = plt.subplots(figsize=(5.5, 3.5))
-        ax.scatter(x, y, label="Data", s=18)
-        if len(x) >= 2:
-            coeffs = np.polyfit(x, y, 1)
-            trend = np.poly1d(coeffs)
-            ax.plot(x, trend(x), "r--", label="Regression")
-        ax.set_xlabel(df.columns[0])
-        ax.set_ylabel(df.columns[1])
-        ax.set_title("Scatterplot with Regression")
-        ax.legend()
+# -------- Main logic --------
 
-        plot_uri = fig_to_base64_png_under_limit(fig, max_bytes=PLOT_MAX_BYTES)
-        plt.close(fig)
-
-    return {
-        "dataset_rows": int(len(df)),
-        "plot": plot_uri
-    }
-
-def handle_highest_grossing_films(question_text: str):
-    """Scrape Wikipedia table of highest-grossing films and return:
-    [# of $2bn movies before 2000, earliest > $1.5bn film, correlation Rank vs Peak, scatterplot URI]
-    """
-    import re
-
-    # Extract URL if provided
-    m = re.search(r"https?://\S+", question_text)
-    url = m.group(0) if m else None
-
-    # --- Fetch page with fallback ---
+def process_request_logic(question_text: str, files: dict):
     try:
-        resp = None
-        if url:
-            resp = requests.get(url, timeout=20, allow_redirects=True)
-        if not url or (resp and resp.status_code != 200):
-            # Fallback: search for correct page
-            search_url = "https://en.wikipedia.org/w/api.php"
-            params = {
-                "action": "query",
-                "list": "search",
-                "srsearch": "List of highest-grossing films",
-                "format": "json"
-            }
-            search_resp = requests.get(search_url, params=params, timeout=10)
-            search_resp.raise_for_status()
-            search_data = search_resp.json()
-            if search_data["query"]["search"]:
-                page_title = search_data["query"]["search"][0]["title"]
-                fallback_url = f"https://en.wikipedia.org/wiki/{page_title.replace(' ', '_')}"
-                resp = requests.get(fallback_url, timeout=20, allow_redirects=True)
-        if not resp or resp.status_code != 200:
-            raise ValueError(f"Failed to fetch Wikipedia page (status {resp.status_code if resp else 'N/A'})")
-    except Exception as e:
-        raise ValueError(f"Failed to fetch Wikipedia page: {e}")
+        q_lower = question_text.lower().strip()
 
-    # --- Parse tables ---
-    try:
-        tables = pd.read_html(resp.text)
-    except Exception as e:
-        raise ValueError(f"Failed to parse HTML tables: {e}")
+        # ---- CSV tasks ----
+        if any(fname.endswith(".csv") for fname in files):
+            csv_files = {k: v for k, v in files.items() if k.endswith(".csv")}
+            for name, f in csv_files.items():
+                df = pd.read_csv(io.BytesIO(f))
+                # Row count
+                if "how many rows" in q_lower:
+                    return len(df)
+                # Correlation
+                if "correlation" in q_lower:
+                    num_cols = df.select_dtypes(include=[np.number]).columns
+                    if len(num_cols) >= 2:
+                        corr = df[num_cols[0]].corr(df[num_cols[1]])
+                        return corr
+                # Scatterplot
+                if "scatterplot" in q_lower:
+                    num_cols = df.select_dtypes(include=[np.number]).columns
+                    if len(num_cols) >= 2:
+                        img_uri = df_to_base64_plot(df, num_cols[0], num_cols[1])
+                        return img_uri
+                # Network shortest path
+                if "shortest path" in q_lower and "source" in q_lower and "target" in q_lower:
+                    # Extract node names from question
+                    import re
+                    src_match = re.search(r"source\s*[:=]?\s*(\w+)", q_lower)
+                    tgt_match = re.search(r"target\s*[:=]?\s*(\w+)", q_lower)
+                    if src_match and tgt_match:
+                        src, tgt = src_match.group(1), tgt_match.group(1)
+                        path = shortest_path_network(io.BytesIO(f), src, tgt)
+                        return path
 
-    # Find table with 'Rank' or similar
-    cand = [
-        t for t in tables
-        if any("rank" in str(c).strip().lower() for c in t.columns)
-    ]
-    if not cand:
-        raise ValueError("No table with a 'Rank'-like column found.")
-    df = cand[0].copy()
-    df.columns = [(" ".join(col) if isinstance(col, tuple) else str(col)).strip() for col in df.columns]
+        # ---- Wikipedia scraping ----
+        if "highest-grossing films" in q_lower:
+            df = scrape_highest_grossing_films()
+            if df is not None:
+                if "$2" in q_lower and "before 2000" in q_lower:
+                    df2 = df[df["Worldwide gross"].str.contains("2", na=False)]
+                    # Filter by release date if available
+                    if "Year" in df2.columns:
+                        before_2000 = df2[df2["Year"] < 2000]
+                        return len(before_2000)
+                if "earliest film" in q_lower and "$1.5" in q_lower:
+                    df["gross_num"] = (
+                        df["Worldwide gross"]
+                        .replace("[\$,]", "", regex=True)
+                        .astype(float)
+                    )
+                    filtered = df[df["gross_num"] > 1_500_000_000]
+                    earliest = filtered.sort_values("Year").iloc[0]["Title"]
+                    return earliest
+                if "correlation" in q_lower:
+                    if "Rank" in df.columns and "Peak" in df.columns:
+                        corr = df["Rank"].corr(df["Peak"])
+                        return corr
+                if "scatterplot" in q_lower:
+                    if "Rank" in df.columns and "Peak" in df.columns:
+                        img_uri = df_to_base64_plot(df, "Rank", "Peak")
+                        return img_uri
 
-    # --- Map columns ---
-    def find_col(possible_names):
-        for col in df.columns:
-            if any(name in col.lower() for name in possible_names):
-                return col
+        # ---- Generic confirm ----
+        if "confirm you received all files" in q_lower:
+            return "All files received: " + ", ".join(files.keys())
+
         return None
 
-    colmap = {
-        "Rank": find_col(["rank"]),
-        "Peak": find_col(["peak"]),
-        "Title": find_col(["title", "film"]),
-        "Gross": find_col(["worldwide", "gross"]),
-        "Year": find_col(["year", "release"])
-    }
+    except Exception:
+        traceback.print_exc()
+        return None
 
-    if not all(colmap.values()):
-        raise ValueError(f"Could not map required columns. Found: {colmap}")
+# -------- API endpoint --------
 
-    # --- Clean numeric data ---
-    def to_num(s):
-        if pd.isna(s):
-            return np.nan
-        return pd.to_numeric(str(s).replace("$", "").replace(",", "").strip(), errors="coerce")
-
-    df["Rank_num"] = pd.to_numeric(df[colmap["Rank"]], errors="coerce")
-    df["Peak_num"] = pd.to_numeric(df[colmap["Peak"]], errors="coerce")
-    df["Gross_num"] = df[colmap["Gross"]].apply(to_num)
-    df["Year_num"] = pd.to_numeric(df[colmap["Year"]], errors="coerce")
-
-    # 1. Number of $2bn movies before 2000
-    two_bn_pre2000 = ((df["Gross_num"] >= 2_000_000_000) & (df["Year_num"] < 2000)).sum()
-
-    # 2. Earliest > $1.5bn film (tie-break on rank)
-    over_1_5 = df[df["Gross_num"] >= 1_500_000_000].copy()
-    earliest_title = ""
-    if not over_1_5.empty:
-        over_1_5 = over_1_5.sort_values(by=["Year_num", "Rank_num"], ascending=[True, True])
-        earliest_title = str(over_1_5.iloc[0][colmap["Title"]])
-
-    # 3. Correlation
-    corr = pd.Series(df["Rank_num"]).corr(pd.Series(df["Peak_num"]))
-
-    # 4. Scatterplot
-    mask = df["Rank_num"].notna() & df["Peak_num"].notna()
-    x = df.loc[mask, "Rank_num"]
-    y = df.loc[mask, "Peak_num"]
-
-    fig, ax = plt.subplots(figsize=(5.5, 3.5))
-    ax.scatter(x, y, s=18)
-    if len(x) >= 2:
-        m, b = np.polyfit(x, y, 1)
-        ax.plot(x, m * x + b, "r--")
-    ax.set_xlabel("Rank")
-    ax.set_ylabel("Peak")
-    ax.set_title("Rank vs Peak")
-    plt.tight_layout()
-    img_uri = fig_to_base64_png_under_limit(fig, max_bytes=PLOT_MAX_BYTES)
-    plt.close(fig)
-
-    return [
-        str(two_bn_pre2000),
-        str(earliest_title),
-        f"{corr:.8f}",
-        img_uri
-    ]
-
-
-
-
-def scrape_wikipedia(topic):
-    url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{topic.replace(' ', '_')}"
-    r = requests.get(url, timeout=10)
-    if r.status_code == 200:
-        return r.json().get("extract", "")
-    return ""
-
-def indian_high_court_query():
-    """Returns a sample from a public CSV dataset."""
-    url = "https://people.sc.fsu.edu/~jburkardt/data/csv/addresses.csv"
-    try:
-        con = duckdb.connect()
-        con.execute("INSTALL httpfs; LOAD httpfs;")
-        df = con.execute(f"SELECT * FROM read_csv_auto('{url}') LIMIT 5").fetchdf()
-        return df.to_dict(orient="records")
-    except Exception as e:
-        return {"error": f"Error loading public CSV: {e}"}
-
-# ---- Main endpoint ----
 @app.post("/")
-async def process_request(
-    questions: UploadFile = File(None, alias="questions"),
-    questions_txt: UploadFile = File(None, alias="questions.txt"),
-    data: UploadFile = File(None, alias="data")
-):
-    start_time = time.time()
+async def process_request(questions: UploadFile = File(...), files: list[UploadFile] = File(None)):
     try:
-        q_file = questions or questions_txt
-        if not q_file:
-            raise HTTPException(status_code=400, detail="Questions file is required")
+        q_text = (await questions.read()).decode("utf-8")
+        other_files = {}
+        if files:
+            for f in files:
+                other_files[f.filename] = await f.read()
 
-        question_text = (await q_file.read()).decode("utf-8").strip()
-        question_lower = question_text.lower()
+        answer = process_request_logic(q_text, other_files)
 
-        if "scrape wikipedia" in question_lower:
-            topic = question_text.split("scrape wikipedia", 1)[1].strip()
-            return {"question": question_text, "answer": scrape_wikipedia(topic)}
-
-        elif "analyze csv" in question_lower and data:
-            csv_bytes = await data.read()
-            return {"question": question_text, **analyze_csv(csv_bytes)}
-
-        elif "indian high court" in question_lower:
-            return {"question": question_text, "records_sample": indian_high_court_query()}
-        
-        # Highest-grossing films handler
-        elif any(kw in question_lower for kw in [
-            "highest grossing films",
-            "highest-grossing films",
-            "list of highest grossing films"
-        ]):
-            return {
-                "question": question_text,
-                "answer": handle_highest_grossing_films(question_text)
-            }
-
-
-        else:
-            # Safe default for unknown types
-            return {"question": question_text, "answer": None}
-
+        return JSONResponse(content={
+            "question": q_text,
+            "answer": answer
+        })
     except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={"error": str(e), "traceback": traceback.format_exc()}
-        )
+        return JSONResponse(content={
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }, status_code=500)
 
-@app.get("/healthz")
-def health_check():
-    return {"status": "ok"}
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
