@@ -75,10 +75,7 @@ def analyze_csv(file_bytes):
     }
 
 def handle_highest_grossing_films(url_text: str):
-    """
-    Scrape Wikipedia table of highest-grossing films and return:
-    [# of $2bn movies before 2000, earliest > $1.5bn film, correlation Rank vs Peak, scatterplot URI]
-    """
+    """Scrape Wikipedia table of highest-grossing films and return: [# of $2bn movies before 2000, earliest > $1.5bn film, correlation Rank vs Peak, scatterplot URI]"""
     import re
     m = re.search(r"https?://\S+", url_text)
     if not m:
@@ -199,7 +196,8 @@ async def process_request(
             return {"question": question_text, "answer": handle_highest_grossing_films(question_text)}
 
         else:
-            return {"question": question_text, "answer": "I don't have logic for that type of question yet."}
+            # Safe default for unknown types
+            return {"question": question_text, "answer": None}
 
     except Exception as e:
         return JSONResponse(
