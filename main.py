@@ -79,17 +79,14 @@ def handle_highest_grossing_films(question_text: str):
     [# of $2bn movies before 2000, earliest > $1.5bn film, correlation Rank vs Peak, scatterplot URI]
     """
     import re
-
     question_lower = question_text.lower()
     normalized_question = re.sub(r"[-]", " ", question_lower)
 
-    # Extract the Wikipedia URL from the question text
     m = re.search(r"https?://\S+", question_text)
     if not m:
         raise ValueError("No URL found in question text.")
     url = m.group(0)
 
-    # Download and parse the table
     resp = requests.get(url, timeout=20)
     resp.raise_for_status()
     tables = pd.read_html(resp.text)
@@ -128,16 +125,21 @@ def handle_highest_grossing_films(question_text: str):
     df["Gross_num"] = df[colmap["Gross"]].apply(to_num)
     df["Year_num"]  = pd.to_numeric(df[colmap["Year"]], errors="coerce")
 
-    two_bn_pre2000 = int(((df["Gross_num"] >= 2_000_000_000) & (df["Year_num"] < 2000)).sum())
+    # 1. Number of $2bn movies before 2000
+    two_bn_pre2000 = ((df["Gross_num"] >= 2_000_000_000) & (df["Year_num"] < 2000)).sum()
 
+    # 2. Earliest > $1.5bn film (tie-break on rank)
     over_1_5 = df[df["Gross_num"] >= 1_500_000_000].copy()
     earliest_title = ""
     if not over_1_5.empty:
-        idx = over_1_5["Year_num"].idxmin()
-        earliest_title = str(df.loc[idx, colmap["Title"]])
+        over_1_5 = over_1_5.sort_values(by=["Year_num", "Rank_num"], ascending=[True, True])
+        earliest_title = str(over_1_5.iloc[0][colmap["Title"]])
 
-    corr = float(pd.Series(df["Rank_num"]).corr(pd.Series(df["Peak_num"])))
+    # 3. Correlation
+    corr = pd.Series(df["Rank_num"]).corr(pd.Series(df["Peak_num"]))
+    corr_str = f"{corr:.8f}"  # fixed precision string
 
+    # 4. Scatterplot
     mask = df["Rank_num"].notna() & df["Peak_num"].notna()
     x = df.loc[mask, "Rank_num"]
     y = df.loc[mask, "Peak_num"]
@@ -150,10 +152,13 @@ def handle_highest_grossing_films(question_text: str):
     ax.set_xlabel("Rank")
     ax.set_ylabel("Peak")
     ax.set_title("Rank vs Peak")
+    plt.tight_layout()
     img_uri = fig_to_base64_png_under_limit(fig, max_bytes=PLOT_MAX_BYTES)
     plt.close(fig)
 
-    return [two_bn_pre2000, earliest_title, corr, img_uri]
+    # Return as array of strings
+    return [str(two_bn_pre2000), earliest_title, corr_str, img_uri]
+
 
 def scrape_wikipedia(topic):
     url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{topic.replace(' ', '_')}"
