@@ -6,6 +6,8 @@ beautifulsoup4
 duckdb
 matplotlib
 python-multipart
+lxml
+numpy
 
 # Optional (install when needed)
 # requests
