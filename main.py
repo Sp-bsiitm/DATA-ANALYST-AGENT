@@ -74,12 +74,23 @@ def scrape_wikipedia(topic):
     return ""
 
 def indian_high_court_query():
-    # Example using DuckDB with HTTPFS parquet
-    url = "https://github.com/datablist/sample-csv-files/raw/main/files/people/people-100.csv"
-    con = duckdb.connect()
-    con.execute("INSTALL httpfs; LOAD httpfs;")
-    df = con.execute(f"SELECT * FROM read_csv_auto('{url}') LIMIT 5").fetchdf()
-    return df.to_dict(orient="records")
+    """
+    Example Indian High Court branch using DuckDB and a public CSV dataset.
+    Returns a small sample (max 5 rows) from a stable CSV URL.
+    """
+    # Stable public CSV (addresses dataset from Florida State University)
+    url = "https://people.sc.fsu.edu/~jburkardt/data/csv/addresses.csv"
+    try:
+        con = duckdb.connect()
+        con.execute("INSTALL httpfs; LOAD httpfs;")
+        # Read first few rows to avoid timeouts
+        df = con.execute(f"""
+            SELECT * FROM read_csv_auto('{url}') LIMIT 5
+        """).fetchdf()
+        return {"records_sample": df.to_dict(orient="records")}
+    except Exception as e:
+        return {"error": f"Error loading public CSV: {e}"}
+
 
 # ---- Main endpoint ----
 from fastapi import HTTPException
