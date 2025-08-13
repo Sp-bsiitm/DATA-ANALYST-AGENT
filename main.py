@@ -193,7 +193,9 @@ async def process_request(
             return {"question": question_text, "records_sample": indian_high_court_query()}
 
         elif "highest-grossing films" in question_lower:
-            return {"question": question_text, "answer": handle_highest_grossing_films(question_text)}
+            # Return the array directly instead of wrapping in a dict
+            return handle_highest_grossing_films(question_text)
+
 
         else:
             # Safe default for unknown types
